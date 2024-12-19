@@ -1,0 +1,242 @@
+import { useState, useEffect } from "react";
+import "./App.css";
+import supabase from "./supabase-clientconfig";
+
+function App() {
+  const [categories, setCategories] = useState([]);
+  const [selectedCategories, setSelectedCategories] = useState([]);
+  const [signupForm, setSignupForm] = useState({ username: "", email: "", password: "" });
+  const [loginForm, setLoginForm] = useState({ email: "", password: "" });
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  // Fetch categories for logged-in users
+  useEffect(() => {
+    if (user) {
+      const fetchCategories = async () => {
+        try {
+          const { data, error } = await supabase.from("products").select("Category");
+          if (error) throw error;
+
+          const uniqueCategories = [...new Set(data.map((item) => item.Category))];
+          setCategories(uniqueCategories);
+        } catch (err) {
+          console.error("Error fetching categories:", err);
+        }
+      };
+      fetchCategories();
+    }
+  }, [user]);
+
+  // Handle form input changes
+  const handleFormChange = (e, formType) => {
+    const { name, value } = e.target;
+    formType === "signup"
+      ? setSignupForm((prev) => ({ ...prev, [name]: value }))
+      : setLoginForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  // Handle signup
+  const handleSignup = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setErrorMessage("");
+
+    const { username, email, password } = signupForm;
+
+    try {
+      if (!username || !email || !password) {
+        throw new Error("All fields are required.");
+      }
+
+      const { error } = await supabase.from("user").insert([{ username, email, password }]);
+      if (error) throw error;
+
+      alert("Signup successful! Please log in.");
+      setSignupForm({ username: "", email: "", password: "" });
+    } catch (error) {
+      setErrorMessage(error.message || "Signup failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle login
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setErrorMessage("");
+
+    const { email, password } = loginForm;
+
+    try {
+      if (!email || !password) {
+        throw new Error("Both email and password are required.");
+      }
+
+      const { data, error } = await supabase
+        .from("user")
+        .select("*")
+        .eq("email", email)
+        .eq("password", password)
+        .single();
+
+      if (error) throw new Error("Invalid email or password.");
+      setUser(data);
+      alert(`Welcome back, ${data.username}!`);
+      setLoginForm({ email: "", password: "" });
+    } catch (error) {
+      setErrorMessage(error.message || "Login failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle logout
+  const handleLogout = () => {
+    setUser(null);
+  };
+
+  // Handle checkbox change
+  const handleCheckboxChange = (category) => {
+    setSelectedCategories((prev) =>
+      prev.includes(category)
+        ? prev.filter((item) => item !== category) // Remove if unchecked
+        : [...prev, category] // Add if checked
+    );
+  };
+
+  if (!user) {
+    return (
+      <div className="auth-container">
+        <div className="form-container">
+          <h1>Signup</h1>
+          <form onSubmit={handleSignup}>
+            <input
+              type="text"
+              name="username"
+              placeholder="Username"
+              value={signupForm.username}
+              onChange={(e) => handleFormChange(e, "signup")}
+              required
+            />
+            <input
+              type="email"
+              name="email"
+              placeholder="Email"
+              value={signupForm.email}
+              onChange={(e) => handleFormChange(e, "signup")}
+              required
+            />
+            <input
+              type="password"
+              name="password"
+              placeholder="Password"
+              value={signupForm.password}
+              onChange={(e) => handleFormChange(e, "signup")}
+              required
+            />
+            <button type="submit" disabled={loading}>
+              {loading ? "Signing up..." : "Sign Up"}
+            </button>
+          </form>
+        </div>
+        <div className="form-container">
+          <h1>Login</h1>
+          <form onSubmit={handleLogin}>
+            <input
+              type="email"
+              name="email"
+              placeholder="Email"
+              value={loginForm.email}
+              onChange={(e) => handleFormChange(e, "login")}
+              required
+            />
+            <input
+              type="password"
+              name="password"
+              placeholder="Password"
+              value={loginForm.password}
+              onChange={(e) => handleFormChange(e, "login")}
+              required
+            />
+            <button type="submit" disabled={loading}>
+              {loading ? "Logging in..." : "Log In"}
+            </button>
+          </form>
+        </div>
+        {errorMessage && <p className="error-message">{errorMessage}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="container">
+      <button onClick={handleLogout} className="logout-button">
+        Logout
+      </button>
+      <h1>Smart Budget Allocation</h1>
+      <form className="budget-form">
+        <label htmlFor="total-budget">Total Grocery Budget:</label>
+        <input
+          type="number"
+          id="total-budget"
+          name="total-budget"
+          placeholder="Enter your budget"
+          required
+        />
+
+        <div id="grocery-categories">
+          {categories.map((category, index) => (
+            <div key={index} className="category-item">
+              <input
+                type="checkbox"
+                id={`category-${index}`}
+                name="grocery-category"
+                value={category}
+                onChange={() => handleCheckboxChange(category)}
+              />
+              <label htmlFor={`category-${index}`}>{category}</label>
+            </div>
+          ))}
+        </div>
+
+        <label htmlFor="timeframe">Timeframe:</label>
+        <select id="timeframe" name="timeframe" required>
+          <option value="">Select timeframe</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+        </select>
+
+        <div className="summary">
+          <h3>Summary:</h3>
+          <div id="summary-text">
+            {selectedCategories.length > 0 ? (
+              <ul>
+                {selectedCategories.map((category, index) => (
+                  <li key={index}>{category}</li>
+                ))}
+              </ul>
+            ) : (
+              "No categories selected yet."
+            )}
+          </div>
+        </div>
+
+        <div className="buttons">
+          <button type="reset" className="cancel-button">
+            Cancel
+          </button>
+          <a href="generate.html">
+            <button type="button" className="generate-button">
+              Generate List
+            </button>
+          </a>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+export default App;
