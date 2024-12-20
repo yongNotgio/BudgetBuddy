@@ -1,242 +1,180 @@
 import { useState, useEffect } from "react";
-import "./App.css";
 import supabase from "./supabase-clientconfig";
 
-function App() {
-  const [categories, setCategories] = useState([]);
-  const [selectedCategories, setSelectedCategories] = useState([]);
-  const [signupForm, setSignupForm] = useState({ username: "", email: "", password: "" });
-  const [loginForm, setLoginForm] = useState({ email: "", password: "" });
-  const [user, setUser] = useState(null);
+function Generate({ selectedCategories, totalBudget, timeframe, goBack }) {
+  const [shoppingList, setShoppingList] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
+  const [error, setError] = useState(null);
+  const [overallTotal, setOverallTotal] = useState(0);
 
-  // Fetch categories for logged-in users
+  // Calculate reasonable quantity limits based on priority and timeframe
+  const calculateReasonableQuantity = (priority, timeframe) => {
+    // Base consumption units per priority level (higher priority = more frequent consumption)
+    const baseUnits = Math.ceil(priority / 2); // Priority 10 = 5 units base, Priority 1 = 1 unit base
+    
+    // Weekly consumption estimate
+    const weeklyConsumption = baseUnits * 2; // Multiply by 2 to get reasonable weekly amounts
+    
+    // Calculate based on timeframe
+    return timeframe === "weekly" 
+      ? weeklyConsumption 
+      : weeklyConsumption * 4; // Monthly consumption
+  };
+
   useEffect(() => {
-    if (user) {
-      const fetchCategories = async () => {
-        try {
-          const { data, error } = await supabase.from("products").select("Category");
-          if (error) throw error;
+    const fetchAndGenerateList = async () => {
+      setLoading(true);
+      setError(null);
 
-          const uniqueCategories = [...new Set(data.map((item) => item.Category))];
-          setCategories(uniqueCategories);
-        } catch (err) {
-          console.error("Error fetching categories:", err);
+      try {
+        // Input validation
+        if (!Array.isArray(selectedCategories) || selectedCategories.length === 0) {
+          throw new Error("Please select at least one category");
         }
-      };
-      fetchCategories();
-    }
-  }, [user]);
+        if (typeof totalBudget !== 'number' || totalBudget <= 0) {
+          throw new Error("Budget must be a positive number");
+        }
+        if (!['weekly', 'monthly'].includes(timeframe)) {
+          throw new Error("Invalid timeframe selected");
+        }
 
-  // Handle form input changes
-  const handleFormChange = (e, formType) => {
-    const { name, value } = e.target;
-    formType === "signup"
-      ? setSignupForm((prev) => ({ ...prev, [name]: value }))
-      : setLoginForm((prev) => ({ ...prev, [name]: value }));
-  };
+        // Fetch products with error handling
+        const { data: products, error: fetchError } = await supabase
+          .from("products")
+          .select("ProductName, Price, Category, Priority")
+          .in("Category", selectedCategories)
+          .gt("Price", 0) // Ensure only positive prices
+          .gt("Priority", 0); // Ensure only positive priorities
 
-  // Handle signup
-  const handleSignup = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setErrorMessage("");
+        if (fetchError) throw fetchError;
+        if (!products || products.length === 0) {
+          throw new Error("No products found for selected categories");
+        }
 
-    const { username, email, password } = signupForm;
+        // Calculate total priority score for budget allocation
+        const categoryPriorities = {};
+        const totalPriorityScore = products.reduce((total, product) => {
+          if (!categoryPriorities[product.Category]) {
+            categoryPriorities[product.Category] = 0;
+          }
+          categoryPriorities[product.Category] += product.Priority;
+          return total + product.Priority;
+        }, 0);
 
-    try {
-      if (!username || !email || !password) {
-        throw new Error("All fields are required.");
+        // Generate shopping list with consumption-based limits
+        const list = [];
+        let overallSum = 0;
+
+        for (const category of selectedCategories) {
+          const categoryProducts = products
+            .filter(product => product.Category === category)
+            .sort((a, b) => b.Priority - a.Priority);
+
+          if (categoryProducts.length > 0) {
+            let categoryBudget = (categoryPriorities[category] / totalPriorityScore) * totalBudget;
+            let remainingBudget = categoryBudget;
+
+            for (const product of categoryProducts) {
+              if (product.Price <= remainingBudget) {
+                // Calculate maximum quantity based on budget
+                const maxBudgetQuantity = Math.floor(remainingBudget / product.Price);
+                
+                // Calculate reasonable quantity based on priority and timeframe
+                const reasonableQuantity = calculateReasonableQuantity(product.Priority, timeframe);
+                
+                // Use the smaller of the two quantities
+                const quantity = Math.min(maxBudgetQuantity, reasonableQuantity);
+
+                if (quantity > 0) {
+                  const totalPrice = quantity * product.Price;
+                  
+                  list.push({
+                    productName: product.ProductName,
+                    category: product.Category,
+                    unitPrice: product.Price.toFixed(2),
+                    quantity,
+                    totalPrice: totalPrice.toFixed(2),
+                  });
+
+                  overallSum += totalPrice;
+                  remainingBudget -= totalPrice;
+                }
+              }
+            }
+
+            // Fallback: Add highest priority item if no items were added for category
+            if (!list.some(item => item.category === category)) {
+              const highestPriorityProduct = categoryProducts[0];
+              const quantity = 1;
+              
+              list.push({
+                productName: highestPriorityProduct.ProductName,
+                category: highestPriorityProduct.Category,
+                unitPrice: highestPriorityProduct.Price.toFixed(2),
+                quantity,
+                totalPrice: (highestPriorityProduct.Price * quantity).toFixed(2),
+              });
+              
+              overallSum += highestPriorityProduct.Price;
+            }
+          }
+        }
+
+        setShoppingList(list);
+        setOverallTotal(overallSum.toFixed(2));
+      } catch (err) {
+        console.error("Error generating shopping list:", err);
+        setError(err.message || "Failed to generate shopping list. Please try again.");
+      } finally {
+        setLoading(false);
       }
+    };
 
-      const { error } = await supabase.from("user").insert([{ username, email, password }]);
-      if (error) throw error;
-
-      alert("Signup successful! Please log in.");
-      setSignupForm({ username: "", email: "", password: "" });
-    } catch (error) {
-      setErrorMessage(error.message || "Signup failed. Please try again.");
-    } finally {
-      setLoading(false);
+    if (selectedCategories.length > 0 && totalBudget > 0 && timeframe) {
+      fetchAndGenerateList();
     }
-  };
-
-  // Handle login
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setErrorMessage("");
-
-    const { email, password } = loginForm;
-
-    try {
-      if (!email || !password) {
-        throw new Error("Both email and password are required.");
-      }
-
-      const { data, error } = await supabase
-        .from("user")
-        .select("*")
-        .eq("email", email)
-        .eq("password", password)
-        .single();
-
-      if (error) throw new Error("Invalid email or password.");
-      setUser(data);
-      alert(`Welcome back, ${data.username}!`);
-      setLoginForm({ email: "", password: "" });
-    } catch (error) {
-      setErrorMessage(error.message || "Login failed. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Handle logout
-  const handleLogout = () => {
-    setUser(null);
-  };
-
-  // Handle checkbox change
-  const handleCheckboxChange = (category) => {
-    setSelectedCategories((prev) =>
-      prev.includes(category)
-        ? prev.filter((item) => item !== category) // Remove if unchecked
-        : [...prev, category] // Add if checked
-    );
-  };
-
-  if (!user) {
-    return (
-      <div className="auth-container">
-        <div className="form-container">
-          <h1>Signup</h1>
-          <form onSubmit={handleSignup}>
-            <input
-              type="text"
-              name="username"
-              placeholder="Username"
-              value={signupForm.username}
-              onChange={(e) => handleFormChange(e, "signup")}
-              required
-            />
-            <input
-              type="email"
-              name="email"
-              placeholder="Email"
-              value={signupForm.email}
-              onChange={(e) => handleFormChange(e, "signup")}
-              required
-            />
-            <input
-              type="password"
-              name="password"
-              placeholder="Password"
-              value={signupForm.password}
-              onChange={(e) => handleFormChange(e, "signup")}
-              required
-            />
-            <button type="submit" disabled={loading}>
-              {loading ? "Signing up..." : "Sign Up"}
-            </button>
-          </form>
-        </div>
-        <div className="form-container">
-          <h1>Login</h1>
-          <form onSubmit={handleLogin}>
-            <input
-              type="email"
-              name="email"
-              placeholder="Email"
-              value={loginForm.email}
-              onChange={(e) => handleFormChange(e, "login")}
-              required
-            />
-            <input
-              type="password"
-              name="password"
-              placeholder="Password"
-              value={loginForm.password}
-              onChange={(e) => handleFormChange(e, "login")}
-              required
-            />
-            <button type="submit" disabled={loading}>
-              {loading ? "Logging in..." : "Log In"}
-            </button>
-          </form>
-        </div>
-        {errorMessage && <p className="error-message">{errorMessage}</p>}
-      </div>
-    );
-  }
+  }, [selectedCategories, totalBudget, timeframe]);
 
   return (
-    <div className="container">
-      <button onClick={handleLogout} className="logout-button">
-        Logout
+    <div className="generate-container">
+      <h1>Generated Shopping List</h1>
+      {loading && <p>Loading...</p>}
+      {error && <p className="error">{error}</p>}
+      {!loading && !error && shoppingList.length === 0 && <p>No items found within the budget.</p>}
+      {!loading && !error && shoppingList.length > 0 && (
+        <>
+          <table className="shopping-list-table">
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th>Product Name</th>
+                <th>Unit Price</th>
+                <th>Quantity</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shoppingList.map((item, index) => (
+                <tr key={`${item.category}-${item.productName}-${index}`}>
+                  <td>{item.category}</td>
+                  <td>{item.productName}</td>
+                  <td>₱{item.unitPrice}</td>
+                  <td>{item.quantity}</td>
+                  <td>₱{item.totalPrice}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <h3>Overall Total: ₱{overallTotal}</h3>
+        </>
+      )}
+      <button onClick={goBack} className="back-button">
+        Back
       </button>
-      <h1>Smart Budget Allocation</h1>
-      <form className="budget-form">
-        <label htmlFor="total-budget">Total Grocery Budget:</label>
-        <input
-          type="number"
-          id="total-budget"
-          name="total-budget"
-          placeholder="Enter your budget"
-          required
-        />
-
-        <div id="grocery-categories">
-          {categories.map((category, index) => (
-            <div key={index} className="category-item">
-              <input
-                type="checkbox"
-                id={`category-${index}`}
-                name="grocery-category"
-                value={category}
-                onChange={() => handleCheckboxChange(category)}
-              />
-              <label htmlFor={`category-${index}`}>{category}</label>
-            </div>
-          ))}
-        </div>
-
-        <label htmlFor="timeframe">Timeframe:</label>
-        <select id="timeframe" name="timeframe" required>
-          <option value="">Select timeframe</option>
-          <option value="weekly">Weekly</option>
-          <option value="monthly">Monthly</option>
-        </select>
-
-        <div className="summary">
-          <h3>Summary:</h3>
-          <div id="summary-text">
-            {selectedCategories.length > 0 ? (
-              <ul>
-                {selectedCategories.map((category, index) => (
-                  <li key={index}>{category}</li>
-                ))}
-              </ul>
-            ) : (
-              "No categories selected yet."
-            )}
-          </div>
-        </div>
-
-        <div className="buttons">
-          <button type="reset" className="cancel-button">
-            Cancel
-          </button>
-          <a href="generate.html">
-            <button type="button" className="generate-button">
-              Generate List
-            </button>
-          </a>
-        </div>
-      </form>
     </div>
   );
 }
 
-export default App;
+export default Generate;
+
+
